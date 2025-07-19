@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:image_picker/image_picker.dart';
 import '../services/ocr_service.dart';
 import '../services/ai_grader_service.dart';
 
@@ -12,42 +13,97 @@ class AIAutoGradingScreen extends StatefulWidget {
 }
 
 class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
-  String studentAnswer = '';
-  String modelAnswer = '';
+  List<String> studentAnswers = [];
+  List<String> modelAnswers = [];
   int totalMarks = 10;
   String result = '';
   bool isLoading = false;
 
-  /// Pick model answer image/PDF and extract text
-  Future<void> pickModelAnswer() async {
-    final model = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'],
-    );
-    if (model != null) {
-      final modelText = await OCRService.extractText(File(model.files.first.path!));
-      setState(() => modelAnswer = modelText);
+  final ImagePicker picker = ImagePicker();
+
+  Future<void> _pickFile({
+    required bool isModel,
+    required bool useCamera,
+  }) async {
+    try {
+      if (useCamera) {
+        final image = await picker.pickImage(source: ImageSource.camera);
+        if (image == null) return;
+
+        final extracted = await OCRService.extractText(File(image.path));
+        setState(() {
+          if (isModel) {
+            modelAnswers.add(extracted);
+          } else {
+            studentAnswers.add(extracted);
+          }
+        });
+      } else {
+        final picked = await FilePicker.platform.pickFiles(
+          allowMultiple: true,
+          type: FileType.custom,
+          allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'],
+        );
+        if (picked == null) return;
+
+        for (var file in picked.files) {
+          final text = await OCRService.extractText(File(file.path!));
+          setState(() {
+            if (isModel) {
+              modelAnswers.add(text);
+            } else {
+              studentAnswers.add(text);
+            }
+          });
+        }
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${isModel ? 'Model' : 'Student'} upload completed ✅')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('❌ Error: $e')),
+      );
     }
   }
 
-  /// Pick student answer image/PDF and extract text
-  Future<void> pickStudentAnswer() async {
-    final student = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'],
+  Future<void> _showUploadOptions({required bool isModel}) async {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('Take Photo'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickFile(isModel: isModel, useCamera: true);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.folder),
+              title: const Text('Pick from Gallery or PDF'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickFile(isModel: isModel, useCamera: false);
+              },
+            ),
+          ],
+        ),
+      ),
     );
-    if (student != null) {
-      final studentText = await OCRService.extractText(File(student.files.first.path!));
-      setState(() => studentAnswer = studentText);
-    }
   }
 
-  /// Grade the student's answer using Groq
   Future<void> gradeAnswer() async {
-    if (studentAnswer.isEmpty || modelAnswer.isEmpty) {
+    if (studentAnswers.isEmpty || modelAnswers.isEmpty) {
       setState(() => result = "❗ Please upload both answers before grading.");
       return;
     }
+
+    final fullStudentAnswer = studentAnswers.join('\n');
+    final fullModelAnswer = modelAnswers.join('\n');
 
     setState(() {
       result = "";
@@ -56,8 +112,8 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
 
     try {
       final response = await AIGRaderService.gradeWithGroq(
-        studentAnswer: studentAnswer,
-        modelAnswer: modelAnswer,
+        studentAnswer: fullStudentAnswer,
+        modelAnswer: fullModelAnswer,
         totalMarks: totalMarks,
       );
 
@@ -71,7 +127,6 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
     }
   }
 
-  /// Dialog to set total marks
   void _showMarkDialog() {
     final controller = TextEditingController(text: totalMarks.toString());
     showDialog(
@@ -99,6 +154,21 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
     );
   }
 
+  Widget _buildPreviewList(String label, List<String> texts) {
+    return ExpansionTile(
+      title: Text("$label Pages (${texts.length})"),
+      children: texts.asMap().entries.map((entry) {
+        return ListTile(
+          title: Text("Page ${entry.key + 1}"),
+          subtitle: Text(
+            entry.value.length > 100 ? "${entry.value.substring(0, 100)}..." : entry.value,
+            maxLines: 2,
+          ),
+        );
+      }).toList(),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -108,12 +178,12 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
         child: Column(
           children: [
             ElevatedButton(
-              onPressed: pickModelAnswer,
+              onPressed: () => _showUploadOptions(isModel: true),
               child: const Text("📄 Upload Model Answer"),
             ),
             const SizedBox(height: 10),
             ElevatedButton(
-              onPressed: pickStudentAnswer,
+              onPressed: () => _showUploadOptions(isModel: false),
               child: const Text("📄 Upload Student Answer"),
             ),
             const SizedBox(height: 10),
@@ -128,6 +198,9 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
             ),
             const SizedBox(height: 20),
             if (isLoading) const CircularProgressIndicator(),
+            _buildPreviewList("📘 Model Answer", modelAnswers),
+            _buildPreviewList("📕 Student Answer", studentAnswers),
+            const SizedBox(height: 10),
             Expanded(
               child: SingleChildScrollView(
                 child: Text(
