@@ -2,65 +2,77 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../services/ocr_service.dart';
+import '../services/ai_grader_service.dart';
 
-class ManualGradingScreen extends StatefulWidget {
-  const ManualGradingScreen({super.key});
+class AIAutoGradingScreen extends StatefulWidget {
+  const AIAutoGradingScreen({super.key});
 
   @override
-  State<ManualGradingScreen> createState() => _ManualGradingScreenState();
+  State<AIAutoGradingScreen> createState() => _AIAutoGradingScreenState();
 }
 
-class _ManualGradingScreenState extends State<ManualGradingScreen> {
-  String result = "";
-  String studentAnswer = "";
-  String modelAnswer = "";
+class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
+  String studentAnswer = '';
+  String modelAnswer = '';
   int totalMarks = 10;
+  String result = '';
+  bool isLoading = false;
 
+  /// Pick model answer image/PDF and extract text
   Future<void> pickModelAnswer() async {
-    final model = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['jpg', 'png', 'jpeg', 'pdf']);
+    final model = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'],
+    );
     if (model != null) {
       final modelText = await OCRService.extractText(File(model.files.first.path!));
-      setState(() {
-        modelAnswer = modelText;
-      });
+      setState(() => modelAnswer = modelText);
     }
   }
 
+  /// Pick student answer image/PDF and extract text
   Future<void> pickStudentAnswer() async {
-    final student = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['jpg', 'png', 'jpeg', 'pdf']);
+    final student = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'],
+    );
     if (student != null) {
       final studentText = await OCRService.extractText(File(student.files.first.path!));
-      setState(() {
-        studentAnswer = studentText;
-      });
+      setState(() => studentAnswer = studentText);
     }
   }
 
-  void gradeAnswer() {
+  /// Grade the student's answer using Groq
+  Future<void> gradeAnswer() async {
     if (studentAnswer.isEmpty || modelAnswer.isEmpty) {
-      setState(() {
-        result = "Please upload both model and student answers.";
-      });
+      setState(() => result = "❗ Please upload both answers before grading.");
       return;
     }
 
-    double similarity = _calculateSimilarity(studentAnswer, modelAnswer);
-    int marks = (similarity * totalMarks).round();
-
     setState(() {
-      result =
-          "Similarity: ${(similarity * 100).toStringAsFixed(2)}%\nMarks: $marks / $totalMarks";
+      result = "";
+      isLoading = true;
     });
+
+    try {
+      final response = await AIGRaderService.gradeWithGroq(
+        studentAnswer: studentAnswer,
+        modelAnswer: modelAnswer,
+        totalMarks: totalMarks,
+      );
+
+      setState(() {
+        result = "✅ Marks: ${response['marks']} / $totalMarks\n\n📝 Feedback:\n${response['feedback']}";
+      });
+    } catch (e) {
+      setState(() => result = "❌ Error: $e");
+    } finally {
+      setState(() => isLoading = false);
+    }
   }
 
-  double _calculateSimilarity(String a, String b) {
-    final aWords = a.toLowerCase().split(RegExp(r'\s+'));
-    final bWords = b.toLowerCase().split(RegExp(r'\s+'));
-    final common = aWords.toSet().intersection(bWords.toSet()).length;
-    return common / (bWords.length == 0 ? 1 : bWords.length);
-  }
-
-  void _showTotalMarksDialog() {
+  /// Dialog to set total marks
+  void _showMarkDialog() {
     final controller = TextEditingController(text: totalMarks.toString());
     showDialog(
       context: context,
@@ -73,16 +85,15 @@ class _ManualGradingScreenState extends State<ManualGradingScreen> {
         ),
         actions: [
           TextButton(
-              onPressed: () {
-                final value = int.tryParse(controller.text);
-                if (value != null && value > 0) {
-                  setState(() {
-                    totalMarks = value;
-                  });
-                }
-                Navigator.pop(context);
-              },
-              child: const Text("Save"))
+            onPressed: () {
+              final val = int.tryParse(controller.text);
+              if (val != null && val > 0) {
+                setState(() => totalMarks = val);
+              }
+              Navigator.pop(context);
+            },
+            child: const Text("Save"),
+          ),
         ],
       ),
     );
@@ -91,9 +102,9 @@ class _ManualGradingScreenState extends State<ManualGradingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Manual Grading')),
+      appBar: AppBar(title: const Text("AI Grading (Groq)")),
       body: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.all(16),
         child: Column(
           children: [
             ElevatedButton(
@@ -107,15 +118,16 @@ class _ManualGradingScreenState extends State<ManualGradingScreen> {
             ),
             const SizedBox(height: 10),
             ElevatedButton(
-              onPressed: _showTotalMarksDialog,
+              onPressed: _showMarkDialog,
               child: Text("🎯 Set Total Marks (Current: $totalMarks)"),
             ),
             const SizedBox(height: 20),
             ElevatedButton(
-              onPressed: gradeAnswer,
+              onPressed: isLoading ? null : gradeAnswer,
               child: const Text("✅ Grade Answer"),
             ),
             const SizedBox(height: 20),
+            if (isLoading) const CircularProgressIndicator(),
             Expanded(
               child: SingleChildScrollView(
                 child: Text(
