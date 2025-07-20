@@ -13,12 +13,11 @@ class AIAutoGradingScreen extends StatefulWidget {
 }
 
 class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
-  List<String> studentAnswers = [];
-  List<String> modelAnswers = [];
+  List<Map<String, dynamic>> modelFiles = [];
+  List<Map<String, dynamic>> studentFiles = [];
   int totalMarks = 10;
   String result = '';
   bool isLoading = false;
-
   final ImagePicker picker = ImagePicker();
 
   Future<void> _pickFile({
@@ -29,14 +28,11 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
       if (useCamera) {
         final image = await picker.pickImage(source: ImageSource.camera);
         if (image == null) return;
-
-        final extracted = await OCRService.extractText(File(image.path));
+        final text = await OCRService.extractText(File(image.path));
         setState(() {
-          if (isModel) {
-            modelAnswers.add(extracted);
-          } else {
-            studentAnswers.add(extracted);
-          }
+          final file = {"text": text, "path": image.path};
+          if (isModel) modelFiles.add(file);
+          else studentFiles.add(file);
         });
       } else {
         final picked = await FilePicker.platform.pickFiles(
@@ -49,11 +45,9 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
         for (var file in picked.files) {
           final text = await OCRService.extractText(File(file.path!));
           setState(() {
-            if (isModel) {
-              modelAnswers.add(text);
-            } else {
-              studentAnswers.add(text);
-            }
+            final item = {"text": text, "path": file.path!};
+            if (isModel) modelFiles.add(item);
+            else studentFiles.add(item);
           });
         }
       }
@@ -96,14 +90,83 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
     );
   }
 
+  void _showImageDialog(String imagePath) {
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        child: Image.file(File(imagePath)),
+      ),
+    );
+  }
+
+  Widget _buildPreviewRow(bool isModel) {
+    final files = isModel ? modelFiles : studentFiles;
+
+    return files.isEmpty
+        ? const SizedBox.shrink()
+        : Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(isModel ? "📘 Model Pages:" : "📕 Student Pages:"),
+                const SizedBox(height: 6),
+                SizedBox(
+                  height: 100,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: files.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (_, index) {
+                      final file = files[index];
+                      return Stack(
+                        children: [
+                          GestureDetector(
+                            onTap: () => _showImageDialog(file["path"]),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.file(
+                                File(file["path"]),
+                                width: 100,
+                                height: 100,
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            top: 2,
+                            right: 2,
+                            child: GestureDetector(
+                              onTap: () {
+                                setState(() => files.removeAt(index));
+                              },
+                              child: Container(
+                                decoration: const BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: Colors.black54,
+                                ),
+                                child: const Icon(Icons.close, size: 18, color: Colors.white),
+                              ),
+                            ),
+                          )
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+  }
+
   Future<void> gradeAnswer() async {
-    if (studentAnswers.isEmpty || modelAnswers.isEmpty) {
+    if (studentFiles.isEmpty || modelFiles.isEmpty) {
       setState(() => result = "❗ Please upload both answers before grading.");
       return;
     }
 
-    final fullStudentAnswer = studentAnswers.join('\n');
-    final fullModelAnswer = modelAnswers.join('\n');
+    final studentAnswer = studentFiles.map((e) => e['text']).join('\n');
+    final modelAnswer = modelFiles.map((e) => e['text']).join('\n');
 
     setState(() {
       result = "";
@@ -112,8 +175,8 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
 
     try {
       final response = await AIGRaderService.gradeWithGroq(
-        studentAnswer: fullStudentAnswer,
-        modelAnswer: fullModelAnswer,
+        studentAnswer: studentAnswer,
+        modelAnswer: modelAnswer,
         totalMarks: totalMarks,
       );
 
@@ -154,21 +217,6 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
     );
   }
 
-  Widget _buildPreviewList(String label, List<String> texts) {
-    return ExpansionTile(
-      title: Text("$label Pages (${texts.length})"),
-      children: texts.asMap().entries.map((entry) {
-        return ListTile(
-          title: Text("Page ${entry.key + 1}"),
-          subtitle: Text(
-            entry.value.length > 100 ? "${entry.value.substring(0, 100)}..." : entry.value,
-            maxLines: 2,
-          ),
-        );
-      }).toList(),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -181,11 +229,12 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
               onPressed: () => _showUploadOptions(isModel: true),
               child: const Text("📄 Upload Model Answer"),
             ),
-            const SizedBox(height: 10),
+            _buildPreviewRow(true),
             ElevatedButton(
               onPressed: () => _showUploadOptions(isModel: false),
               child: const Text("📄 Upload Student Answer"),
             ),
+            _buildPreviewRow(false),
             const SizedBox(height: 10),
             ElevatedButton(
               onPressed: _showMarkDialog,
@@ -198,8 +247,6 @@ class _AIAutoGradingScreenState extends State<AIAutoGradingScreen> {
             ),
             const SizedBox(height: 20),
             if (isLoading) const CircularProgressIndicator(),
-            _buildPreviewList("📘 Model Answer", modelAnswers),
-            _buildPreviewList("📕 Student Answer", studentAnswers),
             const SizedBox(height: 10),
             Expanded(
               child: SingleChildScrollView(
